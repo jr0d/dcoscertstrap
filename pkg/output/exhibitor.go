@@ -35,14 +35,11 @@ func makeTrustStore(caPath string) (keystore.KeyStore, error) {
 	return ks, nil
 }
 
-func makeEntityStore(alias, entity string) (keystore.KeyStore, error) {
-	keyPem, certPem := gen.StorePath(entity+"-key.pem"), gen.StorePath(entity+"-cert.pem")
-
+func makeEntityStore(alias, certPem, keyPem string) (keystore.KeyStore, error) {
 	key, err := gen.ReadPrivateKeyBytes(keyPem)
 	if err != nil {
 		return nil, fmt.Errorf("error reading %s : %v", keyPem, err)
 	}
-
 	cert, err := gen.ReadCertificatePEM(certPem)
 	if err != nil {
 		return nil, fmt.Errorf("error reading %s : %v", certPem, err)
@@ -116,23 +113,15 @@ func WriteArtifacts(dir, caPath, serverEntity, clientEntity, password string) er
 		return err
 	}
 
-	ss, err := makeEntityStore("server", serverEntity)
+	serverCert := gen.StorePath(serverEntity + "-cert.pem")
+	serverKey := gen.StorePath(serverEntity + "-key.pem")
+	ss, err := makeEntityStore("server", serverCert, serverKey)
 	if err != nil {
 		return err
 	}
 	if err := writeKeyStore(ss, path.Join(dir, "serverstore.jks"), password); err != nil {
 		return err
 	}
-
-	cs, err := makeEntityStore("client", clientEntity)
-	if err != nil {
-		return err
-	}
-	if err := writeKeyStore(cs, path.Join(dir, "clientstore.jks"), password); err != nil {
-		return err
-	}
-
-	serverKey, serverCert := gen.StorePath(serverEntity+"-key.pem"), gen.StorePath(serverEntity+"-cert.pem")
 	if err := copyFile(serverKey, dir, 0600); err != nil {
 		return err
 	}
@@ -140,7 +129,15 @@ func WriteArtifacts(dir, caPath, serverEntity, clientEntity, password string) er
 		return err
 	}
 
-	clientKey, clientCert := gen.StorePath(clientEntity+"-key.pem"), gen.StorePath(clientEntity+"-cert.pem")
+	clientCert := gen.StorePath(clientEntity + "-cert.pem")
+	clientKey := gen.StorePath(clientEntity + "-key.pem")
+	cs, err := makeEntityStore("client", clientCert, clientKey)
+	if err != nil {
+		return err
+	}
+	if err := writeKeyStore(cs, path.Join(dir, "clientstore.jks"), password); err != nil {
+		return err
+	}
 	if err := copyFile(clientKey, dir, 0600); err != nil {
 		return err
 	}
