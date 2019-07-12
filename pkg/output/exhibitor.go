@@ -2,44 +2,27 @@ package output
 
 import (
 	"fmt"
-	"github.com/jr0d/dcoscertstrap/pkg/gen"
-	"github.com/pavel-v-chernykh/keystore-go"
-	"github.com/spf13/afero"
 	"io"
 	"log"
 	"os"
 	"path"
 	"time"
+
+	"github.com/jr0d/dcoscertstrap/pkg/gen"
+	keystore "github.com/pavel-v-chernykh/keystore-go"
+	"github.com/spf13/afero"
 )
 
 // AppFs afero file system abstraction
 var AppFs = afero.NewOsFs()
 
-func writeKeyStore(ks keystore.KeyStore, path, password string) error {
-	o, err := AppFs.Create(path)
-	if err != nil {
-		return fmt.Errorf("error creating %s : %v", path, err)
-	}
-	defer o.Close()
-
-	log.Printf("Creating %s", path)
-	err = keystore.Encode(o, ks, []byte(password))
-	if err != nil {
-		return fmt.Errorf("error encoding keystore: %v", err)
-	}
-	return nil
-}
-
-func writeTrustStore(caPath, outputDir, password string) error {
-	const filename = "truststore.jks"
-	outputPath := path.Join(outputDir, filename)
-	ks := keystore.KeyStore{}
-
+func makeTrustStore(caPath string) (keystore.KeyStore, error) {
 	certBytes, err := gen.ReadCertificatePEM(caPath)
 	if err != nil {
-		return fmt.Errorf("error reading %s : %v", caPath, err)
+		return nil, fmt.Errorf("error reading %s : %v", caPath, err)
 	}
 
+	ks := keystore.KeyStore{}
 	ks["root-cert"] = &keystore.TrustedCertificateEntry{
 		Entry: keystore.Entry{
 			CreationDate: time.Now(),
@@ -49,27 +32,23 @@ func writeTrustStore(caPath, outputDir, password string) error {
 			Content: certBytes,
 		},
 	}
-
-	return writeKeyStore(ks, outputPath, password)
+	return ks, nil
 }
 
-func entityPaths(entity string) (string, string) {
-	return gen.StorePath(entity + "-key.pem"), gen.StorePath(entity + "-cert.pem")
-}
+func makeEntityStore(alias, entity string) (keystore.KeyStore, error) {
+	keyPem, certPem := gen.StorePath(entity+"-key.pem"), gen.StorePath(entity+"-cert.pem")
 
-func writeEntityStore(alias, entity, ksPath, password string) error {
-	ks := keystore.KeyStore{}
-	keyPem, certPem := entityPaths(entity)
 	key, err := gen.ReadPrivateKeyBytes(keyPem)
 	if err != nil {
-		return fmt.Errorf("error reading %s : %v", keyPem, err)
+		return nil, fmt.Errorf("error reading %s : %v", keyPem, err)
 	}
 
 	cert, err := gen.ReadCertificatePEM(certPem)
 	if err != nil {
-		return fmt.Errorf("error reading %s : %v", certPem, err)
+		return nil, fmt.Errorf("error reading %s : %v", certPem, err)
 	}
 
+	ks := keystore.KeyStore{}
 	ks[alias] = &keystore.PrivateKeyEntry{
 		Entry: keystore.Entry{
 			CreationDate: time.Now(),
@@ -82,20 +61,21 @@ func writeEntityStore(alias, entity, ksPath, password string) error {
 			},
 		},
 	}
-
-	return writeKeyStore(ks, ksPath, password)
+	return ks, nil
 }
 
-func writeServerStore(entity, outputDir, password string) error {
-	const filename = "serverstore.jks"
-	ksPath := path.Join(outputDir, filename)
-	return writeEntityStore("server", entity, ksPath, password)
-}
+func writeKeyStore(ks keystore.KeyStore, path, password string) error {
+	o, err := AppFs.Create(path)
+	if err != nil {
+		return fmt.Errorf("error creating %s : %v", path, err)
+	}
+	defer o.Close()
 
-func writeClientStore(entity, outputDir, password string) error {
-	const filename = "clientstore.jks"
-	ksPath := path.Join(outputDir, filename)
-	return writeEntityStore("client", entity, ksPath, password)
+	log.Printf("Creating %s", path)
+	if err := keystore.Encode(o, ks, []byte(password)); err != nil {
+		return fmt.Errorf("error encoding keystore: %v", err)
+	}
+	return nil
 }
 
 func copyFile(src, destDir string, mode os.FileMode) error {
@@ -105,7 +85,6 @@ func copyFile(src, destDir string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-
 	defer s.Close()
 
 	d, err := AppFs.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
@@ -122,47 +101,52 @@ func copyFile(src, destDir string, mode os.FileMode) error {
 	return nil
 }
 
-func copyEntities(destDir, serverEntity, clientEntity string) error {
-	serverKey, serverCert := entityPaths(serverEntity)
-	clientKey, clientCert := entityPaths(clientEntity)
-
-	err := copyFile(serverKey, destDir, 0600)
-	if err != nil {
-		return err
-	}
-	err = copyFile(clientKey, destDir, 0600)
-	if err != nil {
-		return err
-	}
-	err = copyFile(serverCert, destDir, 0644)
-	if err != nil {
-		return err
-	}
-	return copyFile(clientCert, destDir, 0644)
-}
-
 // WriteArtifacts creates exhibitor TLS artifacts for DC/OS
-func WriteArtifacts(path, caPath, serverEntity, clientEntity, password string) error {
-	err := AppFs.MkdirAll(path, 0700)
-	if err != nil {
-		return fmt.Errorf("error creating %s : %v", path, err)
+func WriteArtifacts(dir, caPath, serverEntity, clientEntity, password string) error {
+
+	if err := AppFs.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("error creating %s : %v", dir, err)
 	}
 
-	err = writeTrustStore(caPath, path, password)
-	if err != nil {
-
-		return err
-	}
-
-	err = writeServerStore(serverEntity, path, password)
+	ts, err := makeTrustStore(caPath)
 	if err != nil {
 		return err
 	}
-
-	err = writeClientStore(clientEntity, path, password)
-	if err != nil {
+	if err := writeKeyStore(ts, path.Join(dir, "truststore.jks"), password); err != nil {
 		return err
 	}
 
-	return copyEntities(path, serverEntity, clientEntity)
+	ss, err := makeEntityStore("server", serverEntity)
+	if err != nil {
+		return err
+	}
+	if err := writeKeyStore(ss, path.Join(dir, "serverstore.jks"), password); err != nil {
+		return err
+	}
+
+	cs, err := makeEntityStore("client", clientEntity)
+	if err != nil {
+		return err
+	}
+	if err := writeKeyStore(cs, path.Join(dir, "clientstore.jks"), password); err != nil {
+		return err
+	}
+
+	serverKey, serverCert := gen.StorePath(serverEntity+"-key.pem"), gen.StorePath(serverEntity+"-cert.pem")
+	if err := copyFile(serverKey, dir, 0600); err != nil {
+		return err
+	}
+	if err := copyFile(serverCert, dir, 0644); err != nil {
+		return err
+	}
+
+	clientKey, clientCert := gen.StorePath(clientEntity+"-key.pem"), gen.StorePath(clientEntity+"-cert.pem")
+	if err := copyFile(clientKey, dir, 0600); err != nil {
+		return err
+	}
+	if err := copyFile(clientCert, dir, 0644); err != nil {
+		return err
+	}
+
+	return nil
 }
